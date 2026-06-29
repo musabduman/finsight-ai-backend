@@ -2,3 +2,4 @@ fastapi
 pydantic
 psycopg2
 passlib
+uvicorn
