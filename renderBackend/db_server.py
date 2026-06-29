@@ -16,7 +16,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from psycopg2.extras import RealDictCursor
 from psycopg2 import IntegrityError
-from passlib.context import CryptContext
 
 app = FastAPI(title="FinSight AI Database Server")
 
@@ -37,7 +36,6 @@ app.add_middleware(
 # Eski SHA-256 hash'leri artık çalışmaz — mevcut kullanıcılar
 # şifrelerini sıfırlamak zorunda kalır. Eğer mevcut kullanıcı
 # yoksa (yeni proje) hiçbir şey değişmez.
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def hash_password(plain_password: str) -> bytes:
     # 1. Şifreyi önce SHA-256 ile hash'leyip 64 karakterlik sabit uzunluğa getiriyoruz

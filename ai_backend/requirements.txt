@@ -14,4 +14,3 @@ scikit-learn
 google-genai
 ollama
 psycopg2-binary
-passlib[bcrypt]
