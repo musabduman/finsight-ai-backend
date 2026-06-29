@@ -1,7 +1,5 @@
 fastapi
 pydantic
 psycopg2-binary
-passlib
 bcrypt
 uvicorn
-hashlib
