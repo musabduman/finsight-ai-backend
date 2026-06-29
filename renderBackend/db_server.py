@@ -6,6 +6,10 @@
 # 3. /delete_account ve /clear_watchlist artık şifre doğrulaması istiyor
 # 4. groq_key sütunu → ollama_key olarak yeniden adlandırıldı (migration ile)
 # 5. CORS eklendi (db_server da dışarıya açıksa gerekli)
+import os
+import bcrypt
+import hashlib
+import psycopg2
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,8 +17,6 @@ from pydantic import BaseModel
 from psycopg2.extras import RealDictCursor
 from psycopg2 import IntegrityError
 from passlib.context import CryptContext
-import psycopg2
-import os
 
 app = FastAPI(title="FinSight AI Database Server")
 
@@ -37,12 +39,18 @@ app.add_middleware(
 # yoksa (yeni proje) hiçbir şey değişmez.
 pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def hash_password(password: str) -> str:
-    return pwd_ctx.hash(password)
+def hash_password(plain_password: str) -> bytes:
+    # 1. Şifreyi önce SHA-256 ile hash'leyip 64 karakterlik sabit uzunluğa getiriyoruz
+    sha256_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
+    
+    # 2. Elde edilen bu hash'i bcrypt ile tuzlayıp (salt) şifreliyoruz
+    hashed = bcrypt.hashpw(sha256_hash.encode('utf-8'), bcrypt.gensalt())
+    return hashed
 
-def verify_password(plain: str, hashed: str) -> bool:
-    """Girilen şifre, veritabanındaki hash ile eşleşiyor mu?"""
-    return pwd_ctx.verify(plain, hashed)
+def verify_password(plain_password: str, hashed_password: bytes) -> bool:
+    # Doğrulama yaparken de aynı sırayı izliyoruz
+    sha256_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
+    return bcrypt.checkpw(sha256_hash.encode('utf-8'), hashed_password)
 
 # ---------------------------
 # VERİTABANI BAĞLANTISI
