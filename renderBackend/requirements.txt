@@ -1,5 +1,5 @@
 fastapi
 pydantic
-psycopg2
-passlib
+psycopg2-binary
+passlib[bcrypt]
 uvicorn
