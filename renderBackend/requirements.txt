@@ -3,3 +3,4 @@ pydantic
 psycopg2-binary
 bcrypt
 uvicorn
+dotenv
