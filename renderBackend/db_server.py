@@ -11,6 +11,7 @@ import bcrypt
 import hashlib
 import psycopg2
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -19,11 +20,16 @@ from psycopg2 import IntegrityError
 
 app = FastAPI(title="FinSight AI Database Server")
 
+origins = [
+    "http://localhost:3000", # Lokal testler için
+    "https://finsight-ai-frontend-lihbtxwsy-musabdumans-projects.vercel.app", # Vercel linkin (kendi linkinle değiştir)
+]
+
 # CORS — sadece kendi frontend domain'ini yaz, production'da "*" olmamalı
 # Geliştirme aşamasındaysan ["*"] bırakabilirsin, deploy öncesi değiştir
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # TODO: deploy öncesi → ["https://senin-frontend-url.com"]
+    allow_origins=origins, 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,22 +43,24 @@ app.add_middleware(
 # şifrelerini sıfırlamak zorunda kalır. Eğer mevcut kullanıcı
 # yoksa (yeni proje) hiçbir şey değişmez.
 
-def hash_password(plain_password: str) -> bytes:
-    # 1. Şifreyi önce SHA-256 ile hash'leyip 64 karakterlik sabit uzunluğa getiriyoruz
+def hash_password(plain_password: str) -> str:
+    # 1. Şifreyi SHA-256 ile hash'le
     sha256_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
-    
-    # 2. Elde edilen bu hash'i bcrypt ile tuzlayıp (salt) şifreliyoruz
-    hashed = bcrypt.hashpw(sha256_hash.encode('utf-8'), bcrypt.gensalt())
-    return hashed
+    # 2. Bcrypt ile tuzla (Bu işlem bytes döndürür)
+    hashed_bytes = bcrypt.hashpw(sha256_hash.encode('utf-8'), bcrypt.gensalt())
+    # 3. Veritabanı TEXT sütununa sorunsuz kaydetmek için string'e çevirip döndür
+    return hashed_bytes.decode('utf-8')
 
-def verify_password(plain_password: str, hashed_password: bytes) -> bool:
-    # Doğrulama yaparken de aynı sırayı izliyoruz
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    # 1. Girilen şifreyi SHA-256'ya çevir
     sha256_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
-    return bcrypt.checkpw(sha256_hash.encode('utf-8'), hashed_password)
+    # 2. Hem girilen şifreyi hem de veritabanından gelen string'i bytes'a çevirerek karşılaştır
+    return bcrypt.checkpw(sha256_hash.encode('utf-8'), hashed_password.encode('utf-8'))
 
 # ---------------------------
 # VERİTABANI BAĞLANTISI
 # ---------------------------
+load_dotenv()
 DATABASE_URL = os.getenv("DB_LINK")
 
 def get_db_connection():
