@@ -11,7 +11,6 @@ from services.veri import get_stock, get_temel_hesapla
 from services.hafiza import get_memory_for_llm
 from services.haber import anlik_hisse_haberi_cek
 
-
 def tek_hisse_run(sembol, dl_bot, gemini_bot, ollama_bot):
     clean_symbol, df, info = get_stock(sembol)
 
