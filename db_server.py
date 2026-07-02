@@ -21,8 +21,8 @@ from psycopg2 import IntegrityError
 app = FastAPI(title="FinSight AI Database Server")
 
 origins = [
-    "http://localhost:3000", # Lokal testler için
-    "https://finsight-ai-frontend-lihbtxwsy-musabdumans-projects.vercel.app", # Vercel linkin (kendi linkinle değiştir)
+    "https://finsight-ai-frontend-gules.vercel.app",
+    "https://finsight-frontend.onrender.com"
 ]
 
 # CORS — sadece kendi frontend domain'ini yaz, production'da "*" olmamalı
