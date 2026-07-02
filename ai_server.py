@@ -23,7 +23,6 @@ app = FastAPI(title="FinSight AI API")
 # Geliştirme aşamasında ["*"] bırakabilirsin.
 # Production'a almadan önce kendi frontend URL'ini yaz:
 origins = [
-    "https://finsight-ai-frontend-gules.vercel.app",
     "https://finsight-frontend.onrender.com"
 ]
 

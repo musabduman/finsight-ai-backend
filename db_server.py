@@ -21,7 +21,6 @@ from psycopg2 import IntegrityError
 app = FastAPI(title="FinSight AI Database Server")
 
 origins = [
-    "https://finsight-ai-frontend-gules.vercel.app",
     "https://finsight-frontend.onrender.com"
 ]
 
