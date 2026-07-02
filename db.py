@@ -1,171 +1,88 @@
-# ai_server.py — FinSight AI Analiz Sunucusu
+# db.py — Ortak veritabanı yardımcıları (bağlantı, şifre hashleme, migration)
+#
+# Eskiden db_server.py içindeydi. main.py ve routers/auth.py tarafından
+# ortak kullanılıyor.
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
+import os
+import bcrypt
+import hashlib
+import psycopg2
 
-from anlysis_engine import tek_hisse_run
-from ai.llm import Gemini, OllamaAgresif, OllamaChat
-from ai.pythorc import deeplearning
-from indicators.technical import teknik_analiz
-from services.veri import get_stock, normalize_symbol
-from services.haber import anlik_hisse_haberi_cek, get_hisse_haberleri
-from config import CORS_ORIGINS
+from dotenv import load_dotenv
+from fastapi import HTTPException
+from psycopg2.extras import RealDictCursor
 
-app = FastAPI(title="FinSight AI API")
+load_dotenv()
+DATABASE_URL = os.getenv("DB_LINK")
 
-# --- CORS ---
-# Origin listesi artık config.py'den geliyor — db_server.py ile ortak,
-# ikisi arasında kayma (trailing slash vb.) bir daha yaşanmaz.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# --- MODEL YÜKLEME ---
-dl_bot = deeplearning()
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
-# --- PYDANTIC VERİ MODELLERİ ---
-class AnalizIstegi(BaseModel):
-    sembol:     str
-    gemini_key: str
-    ollama_key: str
 
-class ChatMesaji(BaseModel):
-    role:    str
-    content: str
+# ---------------------------
+# ŞİFRE HASHLEME (bcrypt)
+# ---------------------------
+def hash_password(plain_password: str) -> str:
+    sha256_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
+    hashed_bytes = bcrypt.hashpw(sha256_hash.encode('utf-8'), bcrypt.gensalt())
+    return hashed_bytes.decode('utf-8')
 
-class ChatIstegi(BaseModel):
-    messages: List[ChatMesaji]
-    baglam:   str
-    ollama_key: str
 
-# --- ENDPOINTLERİ ---
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    sha256_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
+    return bcrypt.checkpw(sha256_hash.encode('utf-8'), hashed_password.encode('utf-8'))
 
-@app.post("/api/analyze")
-async def analyze_stock(istek: AnalizIstegi):
-    """
-    Detaylı hisse analizi: teknik analiz + DL tahmini + Gemini + Ollama raporu.
-    """
-    try:
-        gemini_bot = Gemini(api_key=istek.gemini_key)
-        ollama_bot = OllamaAgresif(api_key=istek.ollama_key)
 
-        sonuc = tek_hisse_run(
-            sembol=istek.sembol.upper(),
-            dl_bot=dl_bot,
-            gemini_bot=gemini_bot,
-            ollama_bot=ollama_bot,
+def _dogrula(cursor, email: str, password: str):
+    """Email + şifre eşleşiyorsa devam eder, yoksa 401 fırlatır."""
+    cursor.execute("SELECT password FROM users WHERE email=%s", (email,))
+    row = cursor.fetchone()
+    if not row or not verify_password(password, row["password"]):
+        raise HTTPException(status_code=401, detail="E-posta veya şifre hatalı.")
+
+
+# ---------------------------
+# TABLO OLUŞTURMA + MİGRASYON
+# ---------------------------
+def init_db():
+    conn   = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id                SERIAL PRIMARY KEY,
+            username          TEXT UNIQUE,
+            email             TEXT UNIQUE,
+            password          TEXT,
+            gemini_key        TEXT DEFAULT '',
+            ollama_key        TEXT DEFAULT '',
+            is_verified       INTEGER DEFAULT 1,
+            verification_code TEXT
         )
+    """)
 
-        if "error" in sonuc:
-            raise HTTPException(status_code=400, detail=sonuc["error"])
+    cursor.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='users' AND column_name='groq_key'
+            ) THEN
+                ALTER TABLE users RENAME COLUMN groq_key TO ollama_key;
+            END IF;
+        END$$;
+    """)
 
-        df_out = sonuc["df"]
-        if df_out is None or df_out.empty:
-            raise HTTPException(status_code=400, detail="Teknik veri DataFrame'i boş döndü.")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id     SERIAL PRIMARY KEY,
+            email  TEXT,
+            symbol TEXT,
+            UNIQUE(email, symbol)
+        )
+    """)
 
-        son_satir = df_out.iloc[-1]
-
-        return {
-            "symbol":    sonuc["symbol"],
-            "son_fiyat": float(sonuc["son_fiyat"]),
-            "degisim":   round(float(son_satir.get("Percent_Change", 0.0)), 2),
-            "sbs":       round(float(sonuc["son_sbs"]), 1),
-            "rsi":       round(float(son_satir.get("RSI", 50.0)), 1),
-            "karar":     sonuc["dl"].get("yön", "Nötr"),
-            "gemini":    sonuc["gemini"],
-            "ollama":    sonuc["ollama"],
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/chat")
-async def chat_bot(istek: ChatIstegi):
-    """AI Asistan: sohbet geçmişi ve aktif bağlamla cevap üretir."""
-    try:
-        chat_ai = OllamaChat(api_key=istek.ollama_key)
-        gecmis  = [{"role": m.role, "content": m.content} for m in istek.messages]
-        cevap   = chat_ai.generate(chat_history=gecmis, aktif_baglam=istek.baglam)
-        return {"cevap": cevap}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/quick-scan/{sembol}")
-async def quick_scan(sembol: str):
-    """
-    Mega Tarama / BIST30 için hızlı teknik + DL tarama.
-    Her hisse için ayrı ayrı çağrılır.
-    """
-    try:
-        clean_symbol          = normalize_symbol(sembol)
-        clean_symbol, df, _   = get_stock(clean_symbol)
-
-        if df is None or df.empty:
-            raise HTTPException(status_code=404, detail=f"{clean_symbol} için veri alınamadı.")
-
-        df_analiz, fib_20, fib_200 = teknik_analiz(df)
-
-        if df_analiz.empty:
-            raise HTTPException(status_code=400, detail="Teknik analiz için yeterli geçmiş veri yok.")
-
-        son_satir  = df_analiz.iloc[-1]
-        sonuc_dl   = dl_bot.analiz_et(df_analiz)
-        son_fiyat  = float(son_satir["Close"])
-
-        return {
-            "sembol":  clean_symbol.replace(".IS", ""),
-            "fiyat":   son_fiyat,
-            "tahmin":  round(float(sonuc_dl.get("tahmin", son_fiyat)), 2),
-            "guven":   int(sonuc_dl.get("güven", 0)),
-            "yon":     sonuc_dl.get("yön", "Nötr"),
-            "rsi":     round(float(son_satir.get("RSI", 50.0)), 1),
-            "sbs":     round(float(son_satir.get("SBS", 50.0)), 1),
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/news/{sembol}")
-async def get_news(sembol: str):
-    """
-    Hisse haberleri — her haber ayrı obje olarak döner.
-
-    DÜZELTME: Eskiden tüm haber metni tek bir string'e kesilip
-    tek elemanlı liste dönüyordu. Şimdi get_hisse_haberleri()
-    ile her haber ayrı dict olarak frontend'e gidiyor.
-    """
-    try:
-        haberler = get_hisse_haberleri(sembol.upper(), limit=10)
-
-        if not haberler:
-            return {"haberler": []}
-
-        return {
-            "haberler": [
-                {
-                    "baslik":    h["baslik"],
-                    "kaynak":    h["kaynak"],
-                    "saat":      h["tarih"],
-                    "link":      h["link"],
-                    "sentiment": "notr",
-                    "hisse":     h["hisse"],
-                }
-                for h in haberler
-            ]
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    conn.commit()
+    cursor.close()
+    conn.close()
