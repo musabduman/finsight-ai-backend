@@ -1,11 +1,5 @@
 # db_server.py — FinSight AI Veritabanı Sunucusu (Render)
-#
-# DÜZELTMELER:
-# 1. SHA-256 → bcrypt (salt'lı, güvenli şifre hash'i)
-# 2. /get_keys artık şifre doğrulaması istiyor (email+şifre olmadan key alınamaz)
-# 3. /delete_account ve /clear_watchlist artık şifre doğrulaması istiyor
-# 4. groq_key sütunu → ollama_key olarak yeniden adlandırıldı (migration ile)
-# 5. CORS eklendi (db_server da dışarıya açıksa gerekli)
+
 import os
 import bcrypt
 import hashlib
@@ -18,17 +12,14 @@ from pydantic import BaseModel
 from psycopg2.extras import RealDictCursor
 from psycopg2 import IntegrityError
 
+from config import CORS_ORIGINS
+
 app = FastAPI(title="FinSight AI Database Server")
 
-origins = [
-    "https://finsight-ai-frontend-gules.vercel.app"
-]
-
-# CORS — sadece kendi frontend domain'ini yaz, production'da "*" olmamalı
-# Geliştirme aşamasındaysan ["*"] bırakabilirsin, deploy öncesi değiştir
+# CORS — origin listesi config.py'den geliyor, ai_server.py ile ortak.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, 
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

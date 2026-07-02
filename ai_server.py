@@ -16,19 +16,16 @@ from ai.pythorc import deeplearning
 from indicators.technical import teknik_analiz
 from services.veri import get_stock, normalize_symbol
 from services.haber import anlik_hisse_haberi_cek, get_hisse_haberleri
+from config import CORS_ORIGINS
 
 app = FastAPI(title="FinSight AI API")
 
 # --- CORS ---
-# Geliştirme aşamasında ["*"] bırakabilirsin.
-# Production'a almadan önce kendi frontend URL'ini yaz:
-origins = [
-    "https://finsight-ai-frontend-gules.vercel.app"
-]
-
+# Origin listesi artık config.py'den geliyor — db_server.py ile ortak,
+# ikisi arasında kayma (trailing slash vb.) bir daha yaşanmaz.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,   # TODO: deploy öncesi kısıtla
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
