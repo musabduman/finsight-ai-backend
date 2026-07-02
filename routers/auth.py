@@ -1,113 +1,15 @@
-# db_server.py — FinSight AI Veritabanı Sunucusu (Render)
+# routers/auth.py — Kullanıcı kayıt/giriş, API key yönetimi, izleme listesi
+#
+# Eskiden db_server.py adında bağımsız bir Render servisiydi.
+# main.py'ye APIRouter olarak bağlanıyor.
 
-import os
-import bcrypt
-import hashlib
-import psycopg2
-
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from psycopg2.extras import RealDictCursor
 from psycopg2 import IntegrityError
 
-from config import CORS_ORIGINS
+from db import get_db_connection, hash_password, verify_password, _dogrula
 
-app = FastAPI(title="FinSight AI Database Server")
-
-# CORS — origin listesi config.py'den geliyor, ai_server.py ile ortak.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ---------------------------
-# ŞİFRE HASHLEME  (bcrypt)
-# ---------------------------
-# bcrypt her şifre için otomatik rastgele salt üretir.
-# Eski SHA-256 hash'leri artık çalışmaz — mevcut kullanıcılar
-# şifrelerini sıfırlamak zorunda kalır. Eğer mevcut kullanıcı
-# yoksa (yeni proje) hiçbir şey değişmez.
-
-def hash_password(plain_password: str) -> str:
-    # 1. Şifreyi SHA-256 ile hash'le
-    sha256_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
-    # 2. Bcrypt ile tuzla (Bu işlem bytes döndürür)
-    hashed_bytes = bcrypt.hashpw(sha256_hash.encode('utf-8'), bcrypt.gensalt())
-    # 3. Veritabanı TEXT sütununa sorunsuz kaydetmek için string'e çevirip döndür
-    return hashed_bytes.decode('utf-8')
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    # 1. Girilen şifreyi SHA-256'ya çevir
-    sha256_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
-    # 2. Hem girilen şifreyi hem de veritabanından gelen string'i bytes'a çevirerek karşılaştır
-    return bcrypt.checkpw(sha256_hash.encode('utf-8'), hashed_password.encode('utf-8'))
-
-# ---------------------------
-# VERİTABANI BAĞLANTISI
-# ---------------------------
-load_dotenv()
-DATABASE_URL = os.getenv("DB_LINK")
-
-def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-
-# ---------------------------
-# TABLO OLUŞTURMA + MİGRASYON
-# ---------------------------
-def init_db():
-    conn   = get_db_connection()
-    cursor = conn.cursor()
-
-    # Kullanıcı tablosu
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id                SERIAL PRIMARY KEY,
-            username          TEXT UNIQUE,
-            email             TEXT UNIQUE,
-            password          TEXT,
-            gemini_key        TEXT DEFAULT '',
-            ollama_key        TEXT DEFAULT '',
-            is_verified       INTEGER DEFAULT 1,
-            verification_code TEXT
-        )
-    """)
-
-    # Eski veritabanında sütun adı groq_key ise ollama_key'e yeniden adlandır
-    # Bu satır ilk çalışmada migration yapar, sonraki çalışmalarda hata vermez
-    cursor.execute("""
-        DO $$
-        BEGIN
-            IF EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name='users' AND column_name='groq_key'
-            ) THEN
-                ALTER TABLE users RENAME COLUMN groq_key TO ollama_key;
-            END IF;
-        END$$;
-    """)
-
-    # İzleme listesi tablosu
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS watchlist (
-            id     SERIAL PRIMARY KEY,
-            email  TEXT,
-            symbol TEXT,
-            UNIQUE(email, symbol)
-        )
-    """)
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-@app.on_event("startup")
-def startup():
-    init_db()
+router = APIRouter()
 
 # ---------------------------
 # VERİ MODELLERİ
@@ -129,7 +31,7 @@ class WatchlistItem(BaseModel):
 
 class UpdateKeys(BaseModel):
     email:      str
-    password:   str   # ← güvenlik: key güncellemek için şifre gerekli
+    password:   str   # güvenlik: key güncellemek için şifre gerekli
     gemini_key: str
     ollama_key: str
 
@@ -140,29 +42,17 @@ class ChangePassword(BaseModel):
 
 class DeleteRequest(BaseModel):
     email:    str
-    password: str   # ← güvenlik: silmek için şifre gerekli
+    password: str   # güvenlik: silmek için şifre gerekli
 
 class GetKeysRequest(BaseModel):
     email:    str
-    password: str   # ← güvenlik: key almak için şifre gerekli
+    password: str   # güvenlik: key almak için şifre gerekli
 
-# ---------------------------
-# YARDIMCI: Kullanıcı doğrula
-# ---------------------------
-def _dogrula(cursor, email: str, password: str):
-    """
-    Email + şifre eşleşiyorsa True döner, yoksa HTTPException fırlatır.
-    Tekrar eden doğrulama kodunu her endpoint'e yazmamak için.
-    """
-    cursor.execute("SELECT password FROM users WHERE email=%s", (email,))
-    row = cursor.fetchone()
-    if not row or not verify_password(password, row["password"]):
-        raise HTTPException(status_code=401, detail="E-posta veya şifre hatalı.")
 
 # ---------------------------
 # KAYIT
 # ---------------------------
-@app.post("/register")
+@router.post("/register")
 def register(user: UserRegister):
     conn   = get_db_connection()
     cursor = conn.cursor()
@@ -194,10 +84,11 @@ def register(user: UserRegister):
         cursor.close()
         conn.close()
 
+
 # ---------------------------
 # GİRİŞ
 # ---------------------------
-@app.post("/login")
+@router.post("/login")
 def login(user: UserLogin):
     conn   = get_db_connection()
     cursor = conn.cursor()
@@ -208,7 +99,6 @@ def login(user: UserLogin):
         )
         db_user = cursor.fetchone()
 
-        # Kullanıcı bulunamadı veya şifre yanlış
         if not db_user or not verify_password(user.password, db_user["password"]):
             raise HTTPException(status_code=401, detail="Hatalı bilgi veya şifre!")
 
@@ -221,21 +111,16 @@ def login(user: UserLogin):
         cursor.close()
         conn.close()
 
+
 # ---------------------------
-# API KEY OKUMA  (şifre zorunlu)
+# API KEY OKUMA (şifre zorunlu)
 # ---------------------------
-@app.post("/get_keys")
+@router.post("/get_keys")
 def get_keys(req: GetKeysRequest):
-    """
-    NEDEN POST ve NEDEN ŞİFRE?
-    GET /get_keys/email@mail.com olsaydı, email bilen herkes
-    başkasının API key'lerini çekebilirdi. Şimdi email + şifre
-    ikisi de doğru olmalı.
-    """
     conn   = get_db_connection()
     cursor = conn.cursor()
     try:
-        _dogrula(cursor, req.email, req.password)   # şifre yanlışsa burada durur
+        _dogrula(cursor, req.email, req.password)
 
         cursor.execute(
             "SELECT gemini_key, ollama_key FROM users WHERE email=%s",
@@ -251,10 +136,11 @@ def get_keys(req: GetKeysRequest):
         cursor.close()
         conn.close()
 
+
 # ---------------------------
-# API KEY GÜNCELLEME  (şifre zorunlu)
+# API KEY GÜNCELLEME (şifre zorunlu)
 # ---------------------------
-@app.post("/update_keys")
+@router.post("/update_keys")
 def update_keys(req: UpdateKeys):
     conn   = get_db_connection()
     cursor = conn.cursor()
@@ -277,10 +163,11 @@ def update_keys(req: UpdateKeys):
         cursor.close()
         conn.close()
 
+
 # ---------------------------
 # ŞİFRE DEĞİŞTİR
 # ---------------------------
-@app.post("/change_password")
+@router.post("/change_password")
 def change_password(req: ChangePassword):
     conn   = get_db_connection()
     cursor = conn.cursor()
@@ -303,10 +190,11 @@ def change_password(req: ChangePassword):
         cursor.close()
         conn.close()
 
+
 # ---------------------------
 # İZLEME LİSTESİ
 # ---------------------------
-@app.post("/add_watchlist")
+@router.post("/add_watchlist")
 def add_watchlist(item: WatchlistItem):
     conn   = get_db_connection()
     cursor = conn.cursor()
@@ -324,7 +212,8 @@ def add_watchlist(item: WatchlistItem):
         cursor.close()
         conn.close()
 
-@app.get("/get_watchlist/{email}")
+
+@router.get("/get_watchlist/{email}")
 def get_watchlist(email: str):
     conn   = get_db_connection()
     cursor = conn.cursor()
@@ -336,7 +225,8 @@ def get_watchlist(email: str):
         cursor.close()
         conn.close()
 
-@app.delete("/remove_watchlist/{email}/{symbol}")
+
+@router.delete("/remove_watchlist/{email}/{symbol}")
 def remove_watchlist(email: str, symbol: str):
     conn   = get_db_connection()
     cursor = conn.cursor()
@@ -351,11 +241,9 @@ def remove_watchlist(email: str, symbol: str):
         cursor.close()
         conn.close()
 
-@app.delete("/clear_watchlist")
+
+@router.delete("/clear_watchlist")
 def clear_watchlist(req: DeleteRequest):
-    """
-    Tüm izleme listesini sil — şifre doğrulaması zorunlu.
-    """
     conn   = get_db_connection()
     cursor = conn.cursor()
     try:
@@ -372,11 +260,9 @@ def clear_watchlist(req: DeleteRequest):
         cursor.close()
         conn.close()
 
-@app.delete("/delete_account")
+
+@router.delete("/delete_account")
 def delete_account(req: DeleteRequest):
-    """
-    Hesabı sil — şifre doğrulaması zorunlu.
-    """
     conn   = get_db_connection()
     cursor = conn.cursor()
     try:
