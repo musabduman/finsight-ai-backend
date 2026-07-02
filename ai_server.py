@@ -1,9 +1,4 @@
 # ai_server.py — FinSight AI Analiz Sunucusu
-#
-# DÜZELTMELER:
-# 1. /api/news artık haber listesi döndürüyor (tüm haberleri tek string'e kesmiyoruz)
-# 2. haber.py'den get_hisse_haberleri import edildi
-# 3. CORS açıklaması eklendi
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,10 +27,6 @@ app.add_middleware(
 )
 
 # --- MODEL YÜKLEME ---
-# Sunucu başlarken PyTorch modelini hafızaya alıyoruz.
-# dl_bot burada global — analiz_et() içinde self.df gibi instance
-# state tutuluyorsa eş zamanlı isteklerde sorun çıkabilir.
-# Şimdilik tek kullanıcılı/az trafikli proje için sorunsuz.
 dl_bot = deeplearning()
 
 # --- PYDANTIC VERİ MODELLERİ ---
