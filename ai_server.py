@@ -22,10 +22,14 @@ app = FastAPI(title="FinSight AI API")
 # --- CORS ---
 # Geliştirme aşamasında ["*"] bırakabilirsin.
 # Production'a almadan önce kendi frontend URL'ini yaz:
-# allow_origins=["https://finsight-frontend.onrender.com"]
+origins = [
+    "https://finsight-ai-frontend-gules.vercel.app",
+    "https://finsight-frontend.onrender.com"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # TODO: deploy öncesi kısıtla
+    allow_origins=origins,   # TODO: deploy öncesi kısıtla
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
