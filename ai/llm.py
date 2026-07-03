@@ -164,7 +164,7 @@ class Gemini(BaseLLM):
                     config={
                         "temperature":0.4,
                         "top_p":0.95,
-                        "max_output_tokens":4096
+                        "max_output_tokens":1800
                     }
                 )
                 return response.text

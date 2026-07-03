@@ -1,283 +1,202 @@
 """
 FinSight AI — data_fetcher.py
-BIST hisse verisi çekme modülü.
+BIST hisse verisi çekme modülü (İş Yatırım API + Kısmi yfinance)
 """
 
 import time
 import requests
 import pandas as pd
+from datetime import datetime, timedelta
 import yfinance as yf
-
 
 # ---------------------------
 # SESSION (stabil bağlantı)
 # ---------------------------
 _session = requests.Session()
-_session.headers.update({"User-Agent": "Mozilla/5.0"})
-
+_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
 
 # ---------------------------
 # SYMBOL NORMALIZE
 # ---------------------------
-def normalize_symbol(symbol: str) -> str:
-    """THYAO → THYAO.IS, thyao → THYAO.IS"""
+def normalize_symbol(symbol: str, for_isyatirim: bool = False) -> str:
+    """
+    for_isyatirim=True ise 'GARAN' döner.
+    for_isyatirim=False ise 'GARAN.IS' döner.
+    """
     tr_to_en = str.maketrans("ıiğüşöçIİĞÜŞÖÇ", "IIGUSOCIIGUSOC")
     clean = str(symbol).translate(tr_to_en).upper().strip()
-    if not clean.endswith(".IS"):
-        clean += ".IS"
-    return clean
-
-
-# ---------------------------
-# MULTIINDEX DÜZLEŞTIR
-# ---------------------------
-def _flatten(df: pd.DataFrame, symbol: str = None) -> pd.DataFrame:
-    """
-    yfinance bazen MultiIndex döndürür (özellikle tek sembol bulk çekimde).
-    Bu fonksiyon her durumda düz DataFrame döner.
-    """
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    if isinstance(df.columns, pd.MultiIndex):
-        lvl0 = df.columns.get_level_values(0)
-        lvl1 = df.columns.get_level_values(1)
-
-        if symbol and symbol in lvl0:
-            df = df[symbol]
-        elif symbol and symbol in lvl1:
-            df = df.xs(symbol, axis=1, level=1)
-        else:
-            # Sembol bulunamadıysa sadece level-0 isimlerini kullan
-            df.columns = lvl0
-
-    df = df.dropna(how="all")
-    return df
-
+    
+    if for_isyatirim:
+        return clean.replace(".IS", "")
+    else:
+        if not clean.endswith(".IS"):
+            clean += ".IS"
+        return clean
 
 # ---------------------------
-# PRICE DATA  (tekli sembol)
+# PRICE DATA  (İş Yatırım - Limitsiz)
 # ---------------------------
 def get_price_data(symbol: str) -> pd.DataFrame:
     """
-    3 yıllık OHLCV verisi çeker. Hata durumunda 3 kez retry yapar.
-    Başarısız olursa boş DataFrame döner.
+    İş Yatırım API üzerinden 3 yıllık OHLCV verisi çeker.
+    Hata durumunda 3 kez retry yapar.
     """
+    clean_is = normalize_symbol(symbol, for_isyatirim=True)
+    bugun = datetime.now().strftime("%d-%m-%Y")
+    # 3 yıllık veri için:
+    bir_yil_once = (datetime.now() - timedelta(days=365*3)).strftime("%d-%m-%Y")
+
+    url = "https://www.isyatirim.com.tr/_layouts/15/IsYatirim.Website/Common/Data.aspx/HisseTekil"
+    params = {
+        "hisse": clean_is,
+        "startdate": bir_yil_once,
+        "enddate": bugun,
+        "period": "1440" # Günlük veri
+    }
+
     for attempt in range(3):
         try:
-            df = yf.download(
-                symbol,
-                period="3y",
-                progress=False,
-                auto_adjust=True,
-                session=_session,
-            )
-            df = _flatten(df, symbol)
-
-            if not df.empty and "Close" in df.columns:
+            res = _session.get(url, params=params, timeout=10)
+            data = res.json()
+            
+            if 'value' in data and data['value']:
+                df = pd.DataFrame(data['value'])
+                # Sütunları yfinance standardına çevir
+                df = df[['HGDG_TARIH', 'HGDG_ACILIS', 'HGDG_YUKSEK', 'HGDG_DUSUK', 'HGDG_KAPANIS', 'HGDG_HACIM']]
+                df.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+                
+                df['Date'] = pd.to_datetime(df['Date'], format='%d-%m-%Y')
+                df.set_index('Date', inplace=True)
+                df = df.astype(float)
+                
                 return df
-
         except Exception as e:
-            print(f"get_price_data hata (deneme {attempt + 1}/3) [{symbol}]: {e}")
-            time.sleep(2 ** attempt)   # 1s, 2s, 4s
+            print(f"get_price_data hata (deneme {attempt + 1}/3) [{clean_is}]: {e}")
+            time.sleep(1)
 
     return pd.DataFrame()
 
-
 # ---------------------------
-# FAST INFO
+# FAST INFO (DataFrame üzerinden manuel hesaplama)
 # ---------------------------
-def get_fast_info(symbol: str) -> dict:
+def get_fast_info(df: pd.DataFrame) -> dict:
     """
-    Fiyat, piyasa değeri, 52H yüksek/düşük vb. hızlı bilgiler.
-    Her zaman dict döner; hata durumunda boş dict.
+    API'ye istek atmadan, eldeki DataFrame üzerinden istatistikleri çıkarır.
     """
+    if df.empty:
+        return {}
+        
     try:
-        fi = yf.Ticker(symbol, session=_session).fast_info
+        last_price = float(df['Close'].iloc[-1])
+        prev_close = float(df['Close'].iloc[-2]) if len(df) > 1 else last_price
+        
+        # Son 1 yıl (yaklaşık 252 işlem günü)
+        year_data = df.tail(252)
+        
         return {
-            "last_price":              fi.last_price,
-            "market_cap":              fi.market_cap,
-            "year_high":               fi.year_high,
-            "year_low":                fi.year_low,
-            "fifty_day_average":       fi.fifty_day_average,
-            "two_hundred_day_average": fi.two_hundred_day_average,
-            "previous_close":          fi.previous_close,
-            "shares":                  fi.shares,
+            "last_price": last_price,
+            "market_cap": "Bilinmiyor", # İş yatırım grafiğinden piyasa değeri çıkmaz
+            "year_high": float(year_data['High'].max()),
+            "year_low": float(year_data['Low'].min()),
+            "fifty_day_average": float(df['Close'].tail(50).mean()) if len(df) >= 50 else last_price,
+            "two_hundred_day_average": float(df['Close'].tail(200).mean()) if len(df) >= 200 else last_price,
+            "previous_close": prev_close,
+            "shares": "Bilinmiyor",
         }
     except Exception as e:
-        print(f"get_fast_info hata [{symbol}]: {e}")
+        print(f"get_fast_info hesaplama hatası: {e}")
         return {}
-
 
 # ---------------------------
 # MAIN STOCK FETCH  (tekli)
 # ---------------------------
 def get_stock(symbol: str) -> tuple:
-    """
-    Ana veri çekme fonksiyonu.
-    Dönüş: (clean_symbol, df | None, info_dict | None)
-    """
-    clean = normalize_symbol(symbol)
-    try:
-        df   = get_price_data(clean)
-        info = get_fast_info(clean)
+    clean = normalize_symbol(symbol, for_isyatirim=False) # Frontend .IS bekler
+    df = get_price_data(symbol)
 
-        if df.empty or "Close" not in df.columns:
-            print(f"get_stock: {clean} için geçerli fiyat verisi yok")
-            return clean, None, None
-
-        return clean, df, info
-
-    except Exception as e:
-        print(f"get_stock hata [{clean}]: {e}")
+    if df.empty:
+        print(f"get_stock: {clean} için geçerli fiyat verisi yok")
         return clean, None, None
 
+    info = get_fast_info(df)
+    return clean, df, info
 
-# Alias — app.py ve watchlist.py uyumluluğu
 get_stock_data = get_stock
 
-
 # ---------------------------
-# BULK STOCK FETCH  (çoklu)
+# BULK STOCK FETCH  (çoklu / tarama)
 # ---------------------------
 def get_bulk_stocks(symbols: list) -> dict | None:
     """
-    Birden fazla sembolü tek API çağrısıyla çeker.
-    Dönüş: {clean_symbol: df} dict  |  None (başarısız)
-
-    NOT: yfinance group_by="ticker" ile sembol her zaman
-         MultiIndex'in level-0'ında olur.
+    BIST30 veya Mega Tarama için İş Yatırım'dan sırayla veri çeker.
     """
     if not symbols:
         return None
 
-    clean_symbols = [normalize_symbol(s) for s in symbols]
-    symbols_str   = " ".join(clean_symbols)
+    result = {}
+    for sym in symbols:
+        df = get_price_data(sym)
+        if not df.empty:
+            clean = normalize_symbol(sym, for_isyatirim=False)
+            result[clean] = df
+        
+        # Sunucuyu bir anda boğmamak için minik bir nefes (Ban yememek için)
+        time.sleep(0.1) 
 
-    try:
-        raw = yf.download(
-            symbols_str,
-            period="3y",
-            progress=False,
-            auto_adjust=True,
-            group_by="ticker",
-            session=_session,
-        )
-
-        if raw is None or raw.empty:
-            print("get_bulk_stocks: ham veri boş geldi")
-            return None
-
-        result = {}
-
-        for clean in clean_symbols:
-            try:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    lvl0 = raw.columns.get_level_values(0)
-                    if clean in lvl0:
-                        df = raw[clean].copy()
-                    else:
-                        print(f"bulk: {clean} MultiIndex level-0'da bulunamadı")
-                        continue
-                else:
-                    # Tek sembol geldiğinde MultiIndex olmayabilir
-                    df = raw.copy()
-
-                df = _flatten(df, clean)
-
-                if not df.empty and "Close" in df.columns:
-                    result[clean] = df
-                else:
-                    print(f"bulk: {clean} için Close kolonu yok, atlandı")
-
-            except Exception as e:
-                print(f"bulk parse hata [{clean}]: {e}")
-                continue
-
-        return result if result else None
-
-    except Exception as e:
-        print(f"get_bulk_stocks hata: {e}")
-        return None
-
+    return result if result else None
 
 # ---------------------------
-# FUNDAMENTAL HESAPLA
+# FUNDAMENTAL HESAPLA (Sadece bu yfinance kullanır)
 # ---------------------------
 def get_temel_hesapla(symbol: str) -> dict:
     """
-    FK, PD/DD, Piyasa Değeri hesaplar.
-    BIST'te yfinance fundamentals güvenilmez olabilir;
-    her değer için fallback "Yok" döner.
+    FK, PD/DD hesaplamaları için yfinance kullanırız. 
+    Bu işlem nadir yapıldığı için rate limit riski düşüktür.
     """
-    ticker    = yf.Ticker(normalize_symbol(symbol), session=_session)
-    sonuc     = {}
+    clean_yf = normalize_symbol(symbol, for_isyatirim=False)
+    ticker = yf.Ticker(clean_yf, session=_session)
+    sonuc = {}
     piyasa_degeri = None
 
-    # --- Piyasa Değeri & 52H ---
     try:
-        fast          = ticker.fast_info
+        fast = ticker.fast_info
         piyasa_degeri = fast.market_cap
-
         sonuc["Piyasa Değeri"] = f"{piyasa_degeri / 1e9:.2f}B ₺"
         sonuc["52H Yüksek"]   = round(fast.year_high, 2)
         sonuc["52H Düşük"]    = round(fast.year_low,  2)
     except Exception as e:
-        print(f"fast_info hata [{symbol}]: {e}")
         sonuc.setdefault("Piyasa Değeri", "Yok")
         sonuc.setdefault("52H Yüksek",    "Yok")
         sonuc.setdefault("52H Düşük",     "Yok")
 
-    # --- FK (Fiyat/Kazanç) ---
     try:
-        income  = ticker.financials
+        income = ticker.financials
         net_kar = None
-
-        for aday in [
-            "Net Income",
-            "Net Income Continuous Operations",
-            "Net Income Common Stockholders",
-        ]:
+        for aday in ["Net Income", "Net Income Continuous Operations", "Net Income Common Stockholders"]:
             if aday in income.index:
                 net_kar = income.loc[aday].iloc[0]
                 break
 
         if net_kar is not None and piyasa_degeri:
-            if net_kar > 0:
-                sonuc["FK"] = round(piyasa_degeri / net_kar, 2)
-            else:
-                sonuc["FK"] = "Zararda"
+            sonuc["FK"] = round(piyasa_degeri / net_kar, 2) if net_kar > 0 else "Zararda"
         else:
             sonuc["FK"] = "Yok"
-
-    except Exception as e:
-        print(f"FK hata [{symbol}]: {e}")
+    except Exception:
         sonuc["FK"] = "Yok"
 
-    # --- PD/DD (Piyasa Değeri / Defter Değeri) ---
     try:
-        balance  = ticker.balance_sheet
+        balance = ticker.balance_sheet
         ozkaynak = None
-
-        for aday in [
-            "Stockholders Equity",
-            "Total Equity Gross Minority Interest",
-            "Common Stock Equity",
-        ]:
+        for aday in ["Stockholders Equity", "Total Equity Gross Minority Interest", "Common Stock Equity"]:
             if aday in balance.index:
                 ozkaynak = balance.loc[aday].iloc[0]
                 break
 
         if ozkaynak is not None and piyasa_degeri:
-            if ozkaynak > 0:
-                sonuc["PD/DD"] = round(piyasa_degeri / ozkaynak, 2)
-            else:
-                sonuc["PD/DD"] = "Negatif Özkaynak"
+            sonuc["PD/DD"] = round(piyasa_degeri / ozkaynak, 2) if ozkaynak > 0 else "Negatif Özkaynak"
         else:
             sonuc["PD/DD"] = "Yok"
-
-    except Exception as e:
-        print(f"PD/DD hata [{symbol}]: {e}")
+    except Exception:
         sonuc["PD/DD"] = "Yok"
 
     return sonuc
