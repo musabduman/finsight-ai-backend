@@ -7,8 +7,6 @@ from dotenv import load_dotenv
 from datetime import datetime
 from pinecone import Pinecone, ServerlessSpec
 
-load_dotenv("api_keys.env")
-
 # -------------------------
 # AYARLAR
 # -------------------------
