@@ -1,202 +1,118 @@
-"""
-FinSight AI — data_fetcher.py
-BIST hisse verisi çekme modülü (İş Yatırım API + Kısmi yfinance)
-"""
-
-import time
-import requests
+import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-import yfinance as yf
 
-# ---------------------------
-# SESSION (stabil bağlantı)
-# ---------------------------
-_session = requests.Session()
-_session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
+class TechnicalAnalyzer:
+    def __init__(self, df):
+        self.df = df.copy()
 
-# ---------------------------
-# SYMBOL NORMALIZE
-# ---------------------------
-def normalize_symbol(symbol: str, for_isyatirim: bool = False) -> str:
-    """
-    for_isyatirim=True ise 'GARAN' döner.
-    for_isyatirim=False ise 'GARAN.IS' döner.
-    """
-    tr_to_en = str.maketrans("ıiğüşöçIİĞÜŞÖÇ", "IIGUSOCIIGUSOC")
-    clean = str(symbol).translate(tr_to_en).upper().strip()
-    
-    if for_isyatirim:
-        return clean.replace(".IS", "")
-    else:
-        if not clean.endswith(".IS"):
-            clean += ".IS"
-        return clean
-
-# ---------------------------
-# PRICE DATA  (İş Yatırım - Limitsiz)
-# ---------------------------
-def get_price_data(symbol: str) -> pd.DataFrame:
-    """
-    İş Yatırım API üzerinden 3 yıllık OHLCV verisi çeker.
-    Hata durumunda 3 kez retry yapar.
-    """
-    clean_is = normalize_symbol(symbol, for_isyatirim=True)
-    bugun = datetime.now().strftime("%d-%m-%Y")
-    # 3 yıllık veri için:
-    bir_yil_once = (datetime.now() - timedelta(days=365*3)).strftime("%d-%m-%Y")
-
-    url = "https://www.isyatirim.com.tr/_layouts/15/IsYatirim.Website/Common/Data.aspx/HisseTekil"
-    params = {
-        "hisse": clean_is,
-        "startdate": bir_yil_once,
-        "enddate": bugun,
-        "period": "1440" # Günlük veri
-    }
-
-    for attempt in range(3):
-        try:
-            res = _session.get(url, params=params, timeout=10)
-            data = res.json()
-            
-            if 'value' in data and data['value']:
-                df = pd.DataFrame(data['value'])
-                # Sütunları yfinance standardına çevir
-                df = df[['HGDG_TARIH', 'HGDG_ACILIS', 'HGDG_YUKSEK', 'HGDG_DUSUK', 'HGDG_KAPANIS', 'HGDG_HACIM']]
-                df.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-                
-                df['Date'] = pd.to_datetime(df['Date'], format='%d-%m-%Y')
-                df.set_index('Date', inplace=True)
-                df = df.astype(float)
-                
-                return df
-        except Exception as e:
-            print(f"get_price_data hata (deneme {attempt + 1}/3) [{clean_is}]: {e}")
-            time.sleep(1)
-
-    return pd.DataFrame()
-
-# ---------------------------
-# FAST INFO (DataFrame üzerinden manuel hesaplama)
-# ---------------------------
-def get_fast_info(df: pd.DataFrame) -> dict:
-    """
-    API'ye istek atmadan, eldeki DataFrame üzerinden istatistikleri çıkarır.
-    """
-    if df.empty:
-        return {}
+    def bollinger(self, window=20):
+        self.df['SMA'] = self.df['Close'].rolling(window=20).mean()
         
-    try:
-        last_price = float(df['Close'].iloc[-1])
-        prev_close = float(df['Close'].iloc[-2]) if len(df) > 1 else last_price
-        
-        # Son 1 yıl (yaklaşık 252 işlem günü)
-        year_data = df.tail(252)
+        std = self.df['Close'].rolling(window=window).std()
+        self.df['Upper'] = self.df['SMA'] + 2 * std
+        self.df['Lower'] = self.df['SMA'] - 2 * std
+        self.df['Width'] = (self.df['Upper'] - self.df['Lower']) / self.df['SMA']
+        self.df['BOLL_signal'] = np.select(
+            [self.df['Close'] > self.df['Upper'], self.df['Close'] < self.df['Lower']],
+            [1, -1],
+            default=0
+        )
+        return self.df
+
+    def volume_trend(self, window=10):
+        self.df['Volume_signal'] = np.where(
+            self.df['Volume'] > self.df['Volume'].rolling(window=window).mean(), 1, 0
+        )
+        return self.df['Volume_signal']
+
+    def calcu_volatility(self, window=20):
+        self.df['Returns'] = self.df['Close'].pct_change()
+        self.df['Volatility'] = self.df['Returns'].rolling(window=window).std()
+        return self.df['Volatility']
+
+    def calcu_macd(self):
+        exp1 = self.df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = self.df['Close'].ewm(span=26, adjust=False).mean()
+        self.df['MACD'] = exp1 - exp2
+        self.df['Signal_line'] = self.df['MACD'].ewm(span=9, adjust=False).mean()
+        self.df['MACD_signal'] = np.where(
+            (self.df['MACD'] > self.df['Signal_line']) & 
+            (self.df['MACD'].shift(1) <= self.df['Signal_line'].shift(1)), 1,
+        np.where(
+            (self.df['MACD'] < self.df['Signal_line']) &
+            (self.df['MACD'].shift(1) >= self.df['Signal_line'].shift(1)), -1, 0
+        ))
+        return self.df
+
+    def calcu_pivot(self):
+        self.df['Pivot'] = (self.df['High'] + self.df['Low'] + self.df['Close']) / 3
+        self.df['R1'] = (2 * self.df['Pivot']) - self.df['Low']
+        self.df['S1'] = (2 * self.df['Pivot']) - self.df['High']
+        return self.df
+
+    def calculate_fibonacci_levels(self, period=20):
+        recent_df = self.df.tail(period)
+        high = recent_df['High'].max()
+        low = recent_df['Low'].min()
+        diff = high - low
         
         return {
-            "last_price": last_price,
-            "market_cap": "Bilinmiyor", # İş yatırım grafiğinden piyasa değeri çıkmaz
-            "year_high": float(year_data['High'].max()),
-            "year_low": float(year_data['Low'].min()),
-            "fifty_day_average": float(df['Close'].tail(50).mean()) if len(df) >= 50 else last_price,
-            "two_hundred_day_average": float(df['Close'].tail(200).mean()) if len(df) >= 200 else last_price,
-            "previous_close": prev_close,
-            "shares": "Bilinmiyor",
+            "fib_high": round(float(high), 2),
+            "fib_low": round(float(low), 2),
+            "fib_618": round(float(high - 0.382 * diff), 2), 
+            "fib_382": round(float(high - 0.618 * diff), 2)
         }
-    except Exception as e:
-        print(f"get_fast_info hesaplama hatası: {e}")
-        return {}
 
-# ---------------------------
-# MAIN STOCK FETCH  (tekli)
-# ---------------------------
-def get_stock(symbol: str) -> tuple:
-    clean = normalize_symbol(symbol, for_isyatirim=False) # Frontend .IS bekler
-    df = get_price_data(symbol)
-
-    if df.empty:
-        print(f"get_stock: {clean} için geçerli fiyat verisi yok")
-        return clean, None, None
-
-    info = get_fast_info(df)
-    return clean, df, info
-
-get_stock_data = get_stock
-
-# ---------------------------
-# BULK STOCK FETCH  (çoklu / tarama)
-# ---------------------------
-def get_bulk_stocks(symbols: list) -> dict | None:
-    """
-    BIST30 veya Mega Tarama için İş Yatırım'dan sırayla veri çeker.
-    """
-    if not symbols:
-        return None
-
-    result = {}
-    for sym in symbols:
-        df = get_price_data(sym)
-        if not df.empty:
-            clean = normalize_symbol(sym, for_isyatirim=False)
-            result[clean] = df
+    def calculate_sbs_vectorized(self):
+        self.df['Percent_Change'] = self.df['Close'].pct_change() * 100
         
-        # Sunucuyu bir anda boğmamak için minik bir nefes (Ban yememek için)
-        time.sleep(0.1) 
+        fs = 50 + (self.df['Percent_Change'] * 7.14)
+        fs = fs.clip(0, 100) 
+        
+        # GÜVENLİK YAMASI: İş Yatırım hacimlerinde 0 dönme ihtimaline karşı .replace(0, 1) eklendi
+        vol_avg = self.df['Volume'].rolling(window=20).mean().replace(0, 1)
+        hacim_orani = self.df['Volume'] / vol_avg
+        yon = np.where(self.df['Percent_Change'] >= 0, 1, -1)
+        
+        vs = 50 + ((hacim_orani - 1) * 25 * yon)
+        vs = vs.clip(0, 100)
+        
+        mfi_proxy = self.df['RSI'] 
+        
+        self.df['SBS'] = (mfi_proxy * 0.40) + (fs * 0.40) + (vs * 0.20)
+        self.df['SBS'] = self.df['SBS'].round(2)
+        
+        return self.df
 
-    return result if result else None
+    def teknik_baslat(self):
+        delta = self.df['Close'].diff()
+        gain = (delta.where(delta > 0, 0))
+        lose = (-delta.where(delta < 0, 0))
+        avg_gain = gain.ewm(com=13, adjust=False).mean()
+        avg_lose = lose.ewm(com=13, adjust=False).mean()
+        rs = avg_gain / avg_lose
+        self.df['RSI'] = 100 - (100 / (1 + rs))
+        
+        self.df['SMA_50'] = self.df['Close'].rolling(window=50).mean()
+        self.df['SMA_200'] = self.df['Close'].rolling(window=200).mean()
+        self.df['SMA_20'] = self.df['Close'].rolling(window=20).mean() 
+        
+        self.df['Volume_signal'] = self.volume_trend(window=60)
+        self.df['Volatility'] = self.calcu_volatility(window=20)
+        
+        self.bollinger(window=20)
+        self.calcu_macd()
+        self.calcu_pivot()
+        
+        self.calculate_sbs_vectorized()
 
-# ---------------------------
-# FUNDAMENTAL HESAPLA (Sadece bu yfinance kullanır)
-# ---------------------------
-def get_temel_hesapla(symbol: str) -> dict:
-    """
-    FK, PD/DD hesaplamaları için yfinance kullanırız. 
-    Bu işlem nadir yapıldığı için rate limit riski düşüktür.
-    """
-    clean_yf = normalize_symbol(symbol, for_isyatirim=False)
-    ticker = yf.Ticker(clean_yf, session=_session)
-    sonuc = {}
-    piyasa_degeri = None
+        self.df = self.df.dropna()
+        
+        fib_20 = self.calculate_fibonacci_levels(period=20)
+        fib_200 = self.calculate_fibonacci_levels(period=200)
 
-    try:
-        fast = ticker.fast_info
-        piyasa_degeri = fast.market_cap
-        sonuc["Piyasa Değeri"] = f"{piyasa_degeri / 1e9:.2f}B ₺"
-        sonuc["52H Yüksek"]   = round(fast.year_high, 2)
-        sonuc["52H Düşük"]    = round(fast.year_low,  2)
-    except Exception as e:
-        sonuc.setdefault("Piyasa Değeri", "Yok")
-        sonuc.setdefault("52H Yüksek",    "Yok")
-        sonuc.setdefault("52H Düşük",     "Yok")
-
-    try:
-        income = ticker.financials
-        net_kar = None
-        for aday in ["Net Income", "Net Income Continuous Operations", "Net Income Common Stockholders"]:
-            if aday in income.index:
-                net_kar = income.loc[aday].iloc[0]
-                break
-
-        if net_kar is not None and piyasa_degeri:
-            sonuc["FK"] = round(piyasa_degeri / net_kar, 2) if net_kar > 0 else "Zararda"
-        else:
-            sonuc["FK"] = "Yok"
-    except Exception:
-        sonuc["FK"] = "Yok"
-
-    try:
-        balance = ticker.balance_sheet
-        ozkaynak = None
-        for aday in ["Stockholders Equity", "Total Equity Gross Minority Interest", "Common Stock Equity"]:
-            if aday in balance.index:
-                ozkaynak = balance.loc[aday].iloc[0]
-                break
-
-        if ozkaynak is not None and piyasa_degeri:
-            sonuc["PD/DD"] = round(piyasa_degeri / ozkaynak, 2) if ozkaynak > 0 else "Negatif Özkaynak"
-        else:
-            sonuc["PD/DD"] = "Yok"
-    except Exception:
-        sonuc["PD/DD"] = "Yok"
-
-    return sonuc
+        return self.df, fib_20, fib_200
+    
+def teknik_analiz(df):
+    analizor = TechnicalAnalyzer(df)
+    return analizor.teknik_baslat()
