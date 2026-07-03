@@ -286,31 +286,31 @@ class OllamaAgresif(BaseLLM):
             Neden? (2–3 net cümleyle açıkla)"""
         return gemini_prompt
     
-def generate(self, df, ai_rapor, fib_20, sbs):
-        # 1. DÜZELTME: Tek bir prompt metni dönüyor, onu tek değişkene alıyoruz
-        hazir_prompt = self.build_prompt(df, ai_rapor, fib_20, sbs)
-        
-        # 2. DÜZELTME: Modeli sadece "user" rolüyle besliyoruz (Sistem komutları zaten promptun içinde)
-        messages = [
-            {"role": "user", "content": hazir_prompt}
-        ]
-        
-        try:
-            # ollama Client üzerinden istek atıyoruz
-            response = self.client.chat(
-                model=self.model,
-                messages=messages,
-                options={
-                    "temperature": 0.35,
-                    "top_p": 0.9,
-                    "num_predict": 1800 # max_tokens yerine ollama'da num_predict kullanılır
-                }
-            )
+    def generate(self, df, ai_rapor, fib_20, sbs):
+            # 1. DÜZELTME: Tek bir prompt metni dönüyor, onu tek değişkene alıyoruz
+            hazir_prompt = self.build_prompt(df, ai_rapor, fib_20, sbs)
             
-            return response['message']['content'].strip()
-        
-        except Exception as e:
-            return f"⚠️ Denetçi Bağlantı Hatası: {e}"
+            # 2. DÜZELTME: Modeli sadece "user" rolüyle besliyoruz (Sistem komutları zaten promptun içinde)
+            messages = [
+                {"role": "user", "content": hazir_prompt}
+            ]
+            
+            try:
+                # ollama Client üzerinden istek atıyoruz
+                response = self.client.chat(
+                    model=self.model,
+                    messages=messages,
+                    options={
+                        "temperature": 0.35,
+                        "top_p": 0.9,
+                        "num_predict": 1800 # max_tokens yerine ollama'da num_predict kullanılır
+                    }
+                )
+                
+                return response['message']['content'].strip()
+            
+            except Exception as e:
+                return f"⚠️ Denetçi Bağlantı Hatası: {e}"
 
 class OllamaChat(BaseLLM):
     def __init__(self, api_key, model="gpt-oss:120b-cloud"):
