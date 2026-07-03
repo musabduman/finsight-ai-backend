@@ -12,7 +12,7 @@ from ai.llm import Gemini, OllamaAgresif, OllamaChat
 from ai.pythorc import deeplearning
 from indicators.technical import teknik_analiz
 from services.veri import get_stock, normalize_symbol
-from services.haber import anlik_hisse_haberi_cek, get_hisse_haberleri
+from services.haber import get_hisse_haberleri
 
 router = APIRouter()
 
@@ -45,11 +45,13 @@ class ChatIstegi(BaseModel):
 async def analyze_stock(istek: AnalizIstegi):
     """Detaylı hisse analizi: teknik analiz + DL tahmini + Gemini + Ollama raporu."""
     try:
+        sembol_norm = normalize_symbol(istek.sembol)
+
         gemini_bot = Gemini(api_key=istek.gemini_key)
         ollama_bot = OllamaAgresif(api_key=istek.ollama_key)
 
         sonuc = tek_hisse_run(
-            sembol=istek.sembol.upper(),
+            sembol=sembol_norm,
             dl_bot=dl_bot,
             gemini_bot=gemini_bot,
             ollama_bot=ollama_bot,

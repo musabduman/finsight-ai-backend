@@ -30,7 +30,7 @@ def tek_hisse_run(sembol, dl_bot, gemini_bot, ollama_bot):
 
     # ffill sonrasında alıyoruz — NaN riski yok
     son_fiyat = df["Close"].iloc[-1]
-    son_sbs   = df["SBS"].iloc[-1]
+    son_sbs   = df["SBS"].iloc[-1] if "SBS" in df.columns else 50.0
 
     dl_result = dl_bot.analiz_et(df)
 

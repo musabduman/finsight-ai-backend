@@ -28,6 +28,7 @@ class UserLogin(BaseModel):
 class WatchlistItem(BaseModel):
     email:  str
     symbol: str
+    password:str
 
 class UpdateKeys(BaseModel):
     email:      str
@@ -199,12 +200,15 @@ def add_watchlist(item: WatchlistItem):
     conn   = get_db_connection()
     cursor = conn.cursor()
     try:
+        _dogrula(cursor, item.email, item.password)
         cursor.execute(
             "INSERT INTO watchlist (email, symbol) VALUES (%s, %s)",
             (item.email, item.symbol.upper())
         )
         conn.commit()
         return {"mesaj": f"{item.symbol.upper()} eklendi."}
+    except HTTPException:
+        raise
     except IntegrityError:
         conn.rollback()
         raise HTTPException(status_code=400, detail="Bu hisse zaten listenizde var!")
@@ -212,12 +216,12 @@ def add_watchlist(item: WatchlistItem):
         cursor.close()
         conn.close()
 
-
 @router.get("/get_watchlist/{email}")
-def get_watchlist(email: str):
+def get_watchlist(email: str, password: str):
     conn   = get_db_connection()
     cursor = conn.cursor()
     try:
+        _dogrula(cursor, email, password)
         cursor.execute("SELECT symbol FROM watchlist WHERE email=%s", (email,))
         symbols = [row["symbol"] for row in cursor.fetchall()]
         return {"watchlist": symbols}
@@ -225,12 +229,12 @@ def get_watchlist(email: str):
         cursor.close()
         conn.close()
 
-
 @router.delete("/remove_watchlist/{email}/{symbol}")
-def remove_watchlist(email: str, symbol: str):
+def remove_watchlist(email: str, symbol: str, password: str):
     conn   = get_db_connection()
     cursor = conn.cursor()
     try:
+        _dogrula(cursor, email, password)
         cursor.execute(
             "DELETE FROM watchlist WHERE email=%s AND symbol=%s",
             (email, symbol.upper())
@@ -240,7 +244,6 @@ def remove_watchlist(email: str, symbol: str):
     finally:
         cursor.close()
         conn.close()
-
 
 @router.delete("/clear_watchlist")
 def clear_watchlist(req: DeleteRequest):
