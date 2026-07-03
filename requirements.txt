@@ -3,7 +3,7 @@ uvicorn
 pydantic
 pandas
 python-dotenv
-pinecone-client
+pinecone
 requests
 yfinance
 feedparser
